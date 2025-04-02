@@ -18,6 +18,7 @@ import matplotlib.pyplot as plt
 
 import torchvision.utils as vutils
 
+import torch.nn.utils as nn_utils
 
 
 class CustomMNISTDataset(Dataset):
@@ -30,7 +31,7 @@ class CustomMNISTDataset(Dataset):
 
         self.image_paths = []
 
-        
+
 
         for i in range(10):
 
@@ -40,17 +41,17 @@ class CustomMNISTDataset(Dataset):
 
                 self.image_paths.append(img_file)
 
-                
+
 
         print(f'Found {len(self.image_paths)} images')
 
-        
+
 
     def __len__(self):
 
         return len(self.image_paths)
 
-    
+
 
     def __getitem__(self, index):
 
@@ -58,19 +59,19 @@ class CustomMNISTDataset(Dataset):
 
         image = Image.open(img_path).convert("L")
 
-        
+
 
         if self.transform is not None:
 
             image = self.transform(image)
 
-        
 
-        return image    
 
-    
+        return image
 
-    
+
+
+
 
 class Generator(nn.Module):
 
@@ -78,29 +79,31 @@ class Generator(nn.Module):
 
         super(Generator, self).__init__()
 
-            
+
 
         self.conv1 = nn.ConvTranspose2d(z_dim, feature_g*4, kernel_size=4, stride=1, padding=0, bias=False)
 
         self.bn1 = nn.InstanceNorm2d(feature_g*4)
+        #self.gn1 = nn.GroupNorm(8, feature_g*4)
 
         self.r1 = nn.ReLU(True)
 
-        
+
 
         self.conv2 = nn.ConvTranspose2d(feature_g*4, feature_g, kernel_size=4, stride=2, padding=1, bias=False)
 
         self.bn2 = nn.InstanceNorm2d(feature_g)
+        #self.gn2 = nn.GroupNorm(8, feature_g)
 
         self.r2 = nn.ReLU(True)
 
-        
+
 
         self.conv3 = nn.ConvTranspose2d(feature_g, img_channels, kernel_size=4, stride=2, padding=1, bias=False)
 
         self.t = nn.Tanh()
 
-        
+
 
     def forward(self, x):
 
@@ -124,11 +127,11 @@ class Generator(nn.Module):
 
         return x
 
-    
 
-    
 
-    
+
+
+
 
 class Discriminator(nn.Module):
 
@@ -136,29 +139,31 @@ class Discriminator(nn.Module):
 
         super(Discriminator, self).__init__()
 
-            
+
 
         self.conv1 = nn.Conv2d(img_channels, feature_d, kernel_size=4, stride=2, padding=1, bias=False)
 
         self.bn1 = nn.BatchNorm2d(feature_d)
+        #self.gn1 = nn.GroupNorm(2, feature_d)
 
         self.r1 = nn.LeakyReLU(True)
 
-        
+
 
         self.conv2 = nn.Conv2d(feature_d, feature_d*4, kernel_size=4, stride=2, padding=1, bias=False)
 
         self.bn2 = nn.BatchNorm2d(feature_d*4)
+        #self.gn2 = nn.GroupNorm(2, feature_d*4)
 
         self.r2 = nn.ReLU(True)
 
-        
+
 
         self.conv3 = nn.Conv2d(feature_d*4, 1, kernel_size=3, stride=2, padding=0, bias=False)
 
         self.t = nn.Sigmoid()
 
-        
+
 
     def forward(self, x):
 
@@ -181,7 +186,32 @@ class Discriminator(nn.Module):
         # print("----------------------")
 
         return x
+"""
+class Discriminator(nn.Module):
+    def __init__(self, img_channels=1, feature_d=64):
+        super(Discriminator, self).__init__()
 
+        self.conv1 = nn_utils.spectral_norm(
+            nn.Conv2d(img_channels, feature_d, kernel_size=4, stride=2, padding=1, bias=False)
+        )
+        self.r1 = nn.LeakyReLU(0.2, inplace=True)
+
+        self.conv2 = nn_utils.spectral_norm(
+            nn.Conv2d(feature_d, feature_d * 4, kernel_size=4, stride=2, padding=1, bias=False)
+        )
+        self.r2 = nn.ReLU(True)
+
+        self.conv3 = nn_utils.spectral_norm(
+            nn.Conv2d(feature_d * 4, 1, kernel_size=3, stride=2, padding=0, bias=False)
+        )
+        self.t = nn.Sigmoid()
+
+    def forward(self, x):
+        x = self.r1(self.conv1(x))
+        x = self.r2(self.conv2(x))
+        x = self.t(self.conv3(x))
+        return x
+"""
 
 
 data_dir = './data/train/'
@@ -194,15 +224,19 @@ os.makedirs(result_dir, exist_ok=True)
 
 # 4. 하이퍼파라미터 정의
 
-batch_size = 64
+# batch_size = 64
+batch_size = 32
 
-lr = 0.0001
+# lr = 0.0001
+lr = 0.0002
 
-z_dim = 100
+# z_dim = 100
+z_dim = 25
 
+# device = "cuda" if torch.cuda.is_available() else "cpu"
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
-epochs = 20  # 훈련 에포크 수
+epochs = 100  # 훈련 에포크 수
 
 
 
@@ -276,6 +310,8 @@ def show_generated_images(generator, num_images=64, epoch=0):
 
         plt.title(f'Generated Images at Epoch {epoch}')
 
+        plt.show()
+
         plt.savefig(f'{result_dir}image.png', pad_inches=0.1, bbox_inches='tight')
 
         plt.close()
@@ -294,7 +330,7 @@ for epoch in range(epochs):
 
         batch_size = real.shape[0]
 
-        
+
 
         ### (a) 판별자 훈련 (진짜 이미지)
 
@@ -302,7 +338,7 @@ for epoch in range(epochs):
 
         fake = gen(noise)
 
-        
+
 
         # 진짜 이미지 판별
 
@@ -310,7 +346,7 @@ for epoch in range(epochs):
 
         loss_disc_real = bce_loss(disc_real, torch.ones_like(disc_real))
 
-        
+
 
         # 가짜 이미지 판별
 
@@ -318,7 +354,7 @@ for epoch in range(epochs):
 
         loss_disc_fake = bce_loss(disc_fake, torch.zeros_like(disc_fake))
 
-        
+
 
         loss_disc = (loss_disc_real + loss_disc_fake) / 2
 
@@ -328,7 +364,7 @@ for epoch in range(epochs):
 
         opt_disc.step()
 
-        
+
 
         ### (b) 생성자 훈련 (가짜 이미지)
 
@@ -336,7 +372,7 @@ for epoch in range(epochs):
 
         loss_gen = bce_loss(output, torch.ones_like(output))
 
-        
+
 
         opt_gen.zero_grad()
 
@@ -344,14 +380,14 @@ for epoch in range(epochs):
 
         opt_gen.step()
 
-        
 
-        if batch_idx % 10 == 0:
+
+        if batch_idx % 100 == 0:
 
             print(f"Epoch [{epoch+1}/{epochs}] Batch {batch_idx}/{len(train_dataloader)} "
 
                   f"Loss D: {loss_disc:.4f}, Loss G: {loss_gen:.4f}")
 
-        
+
 
             show_generated_images(gen, num_images=16, epoch=epoch+1)
