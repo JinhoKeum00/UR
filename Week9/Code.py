@@ -191,6 +191,8 @@ for epoch in range(num_epochs):
   print(f"Epoch : {epoch+1:4d}, Cost : {cost:.3f}")
 
 import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import linear_sum_assignment
 
 model.eval()
 with torch.no_grad():
@@ -199,64 +201,75 @@ with torch.no_grad():
 
     # 예측
     out = model(imgs)['out']
-    pred_full = out.argmax(dim=1).cpu().numpy()  # [16,64,64]
+    pred_full = out.argmax(dim=1).cpu().numpy()  # [B,H,W]
 
-    # 배치에서 첫 샘플 뽑아내기
-    img   = imgs[0].cpu()                        # [3,64,64]
-    gt    = gt_masks[0].cpu().numpy()            # [4,64,64]
-    pred  = pred_full[0]                         # [64,64]
+    # 기본은 0번째 샘플로 되어있는데, 다른 샘플은 index를 수정하여 확인할 수 있습니다.
+    img   = imgs[0].cpu()                        # [3,H,W]
+    gt    = gt_masks[0].cpu().numpy()            # [4,H,W]
+    pred  = pred_full[0]                         # [H,W]
 
-    # 원본 denormalization 및 permute -> 시각화 위함
+    # denormalize + permute
     img = img.mul(0.5).add(0.5).permute(1,2,0).numpy()
 
-    # GT 채널 수 == 4
-    n_ch = gt.shape[0]
+    n_ch    = gt.shape[0]       # 4
+    num_cls = out.shape[1]      # 11 (0~9 + None=10)
+    cost    = np.zeros((n_ch, num_cls), dtype=np.int32)
+
+    # 비용 행렬 만들기 (mask가 비어있는 채널은 모두 0으로)
+    for i in range(n_ch):
+        mask_i = gt[i].astype(bool)
+        if not mask_i.any():
+            # GT 없는 채널이면 cost row는 그대로 0
+            continue
+        for j in range(num_cls):
+            cost[i,j] = -np.sum((pred == j) & mask_i)
+
+    # 헝가리안 알고리즘으로 매칭
+    row_ind, col_ind = linear_sum_assignment(cost)
+    # 이제 row_ind[k] 채널 ↔ col_ind[k] 클래스 매핑
+
+    # 각 채널별 assigned class 정리 (없으면 -1)
+    assigned = {i: -1 for i in range(n_ch)}
+    for i, j in zip(row_ind, col_ind):
+        # 매칭됐더라도 GT가 비어 있었던 채널(i)은 제외
+        if gt[i].astype(bool).any():
+            assigned[i] = j
+
+    # 시각화
     fig, axes = plt.subplots(n_ch, 3, figsize=(9, 3*n_ch))
+    if n_ch == 1: axes = axes[np.newaxis, :]
 
-    # Boolean 배열로 바꾸고 예측 분류 최빈값 계산
     for ch in range(n_ch):
-        # GT binary mask
-        mask_ch = gt[ch].astype(bool)
-
-        # GT 영역에서 pred 레이블의 최빈값을 구한다
-        # GT에 객체(1로 이루어짐)가 하나라도 있는지 확인
-        if mask_ch.any():
-            # 각 클래스별 빈도 수 집계
-            labels, counts = np.unique(pred[mask_ch], return_counts=True)
-            # 최빈 클래스 선택
-            cls = int(labels[np.argmax(counts)])
-        else:
-            cls = -1  # 해당 채널에 GT가 없으면 건너뜀
-
-        # Pred 마스크를 GT 영역으로 한정 -> segmentation 결과와 GT 비교
-        if cls >= 0:
-            # GT 영역 내에서만
-            pm = ((pred == cls) & mask_ch).astype(float)
-            # 밝기 2배 변환 후 [0,1]로 자름
-            pm = np.clip(pm * 2.0, 0, 1)
+        mask_ch      = gt[ch].astype(bool)
+        cls_pred     = assigned[ch] # 0~10 혹은 -1
+        # GT영역 & 예측 클래스가 같을 때만 표시
+        if cls_pred >= 0:
+            pm = ((pred == cls_pred) & mask_ch).astype(float)
         else:
             pm = np.zeros_like(pred, dtype=float)
+        pm = np.clip(pm*2.0, 0, 1) # 선명도 2배
 
-        # GT 시각화용
+        # GT 시각화
         gt_viz = mask_ch.astype(float)
 
-        # plot
-        # 원본 이미지
+        # plot 원본
         ax = axes[ch, 0]
         ax.imshow(img)
         ax.set_title("Original")
         ax.axis("off")
 
-        # GT 마스크
+        # plot GT mask
         ax = axes[ch, 1]
         ax.imshow(gt_viz, cmap="gray", vmin=0, vmax=1)
         ax.set_title(f"GT ch {ch}")
         ax.axis("off")
 
-        # Predicted 마스크
+        # plot Predicted mask
         ax = axes[ch, 2]
         ax.imshow(pm, cmap="gray", vmin=0, vmax=1)
-        ax.set_title(f"Pred cls {cls}")
+        # 클래스가 -1 이면 “None”으로, 아니면 숫자로 표시
+        title = "Pred cls None" if cls_pred < 0 else f"Pred cls {cls_pred}"
+        ax.set_title(title)
         ax.axis("off")
 
     plt.tight_layout()
